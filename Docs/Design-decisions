@@ -1,0 +1,34 @@
+# Design decisions
+
+## Why a Cognito authorizer, not auth code in Lambda
+
+Authentication enforced at the gateway is configuration, not code. There is nothing to patch, no JWT library to keep current, and a rejected request never invokes Lambda, so it costs nothing and reaches no application logic. The function receives claims that API Gateway has already verified.
+
+## Token-based (API Gateway) vs session-based (ALB + Cognito)
+
+| | API Gateway + Cognito authorizer | ALB + Cognito authentication |
+|---|---|---|
+| Credential | JWT in the `Authorization` header | Session cookie (`AWSELBAuthSessionCookie`) |
+| Who runs the OAuth flow | The client obtains and manages tokens | The ALB runs the full flow, including the hosted login page |
+| State | Stateless, token carries everything | Session managed by the ALB |
+| Best fit | Mobile apps, SPAs, service-to-service APIs | Browser-based web apps |
+| Identity reaches backend as | `requestContext.authorizer.claims` | `x-amzn-oidc-*` headers |
+
+Same identity provider on both paths. The choice is about who your caller is: a browser you can redirect, or a program that must hold a token.
+
+## Choosing an API Gateway authorizer
+
+| Authorizer | Use when |
+|---|---|
+| Cognito | Users live in a Cognito pool and standard JWT validation is enough. No Lambda cost, built-in caching. |
+| Lambda (token or request) | Custom logic: external IdPs (Auth0, Okta), database lookups, attribute-based rules. |
+| IAM (SigV4) | AWS service-to-service calls with IAM credentials. |
+| API keys | Rate limiting and usage plans, not authentication. Combine with one of the above. |
+
+## Security posture
+
+- HTTPS is the only transport API Gateway offers. TLS is not optional here.
+- The app client has no secret. Public clients (browsers, mobile) cannot keep one; short-lived signed tokens carry the trust instead.
+- Signature, expiry, issuer and audience are all validated against the pool's JWKS on every request.
+- Both `/` and `/{proxy+}` are protected, so no route bypasses the check.
+- CORS in the sample Lambda is wide open for demo purposes. Pin `Access-Control-Allow-Origin` to your web origin in production, and prefer scoped access tokens with short TTLs for sensitive APIs.
