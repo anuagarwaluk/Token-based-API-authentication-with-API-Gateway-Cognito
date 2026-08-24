@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  REST API on API Gateway protected by a Cognito User Pool authorizer,
+  with a Python Lambda proxy integration. Reproduces the setup in this repo.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+
+Globals:
+  Function:
+    Timeout: 10
+    MemorySize: 128
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: apigw-auth-userpool
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      Schema:
+        - Name: email
+          Required: true
+          Mutable: true
+
+  # Public client: no secret. Browser and mobile apps cannot keep one.
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: apigw-auth-client
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  Api:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: apigw-cognito-jwt-auth
+      StageName: !Ref Environment
+      EndpointConfiguration:
+        Type: REGIONAL
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !GetAtt UserPool.Arn
+            # Header carrying the JWT
+            Identity:
+              Header: Authorization
+
+  HelloFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: apigw-cognito-hello
+      CodeUri: ../src/
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.11
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+      Events:
+        Root:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /
+            Method: ANY
+        Proxy:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /{proxy+}
+            Method: ANY
+
+Outputs:
+  ApiEndpoint:
+    Value: !Sub https://${Api}.execute-api.${AWS::Region}.amazonaws.com/${Environment}
+  UserPoolId:
+    Value: !Ref UserPool
+  AppClientId:
+    Value: !Ref UserPoolClient
